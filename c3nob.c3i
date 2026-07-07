@@ -1,40 +1,31 @@
 // ============================================================================
-// c3nob.c3i - clean v1 of the C3 port of tsoding/nob.h
+// c3nob.c3i - cross-platform (POSIX/Linux + Win32/MSVC) header for c3nob v2
 // ----------------------------------------------------------------------------
-// A small "nobuild"-style build-system-as-a-library for C3, written in
-// the spirit of tsoding/nob.h.
+// A small "nobuild"-style build-system-as-a-library for C3, written in the
+// spirit of tsoding/nob.h. v2 adds Windows MSVCRT + Win32 process support
+// on top of the v1 POSIX surface.
 //
-// Quick example:
+// c3c 0.8.1 specific syntax notes (since both `$if env::WIN32` and
+// `@if(env::WIN32)` at MODULE-LEVEL scope are rejected with
+// "Expected the start of a global declaration here"):
+//   * All platform-specific declarations are issued UNCONDITIONALLY at
+//     module level - the linker drops unreferenced symbols, so unused
+//     POSIX decls on Windows (and unused MSVCRT/Win32 decls on POSIX)
+//     do not cause link errors.
+//   * Compilation-time dispatch happens INSIDE function bodies via the
+//     `$if env::WIN32:` / `$else:` / `$endif` form, which IS supported
+//     at function scope on c3c 0.8.1.
+//   * Win32 PascalCase symbols (CreateProcessA, WaitForSingleObject)
+//     are bound via `@cname(...)` to C3 lowercase names, since c3c
+//     rejects function names that start with an uppercase letter.
+//   * Win32 `BOOL` is 4-byte `int`, not 1-byte C3 `bool` - so Win32
+//     extern fn signatures use `int` for BOOL parameters/returns.
 //
-//     module build;
-//     import c3nob;
-//
-//     fn int main(int argc, char** argv)
-//     {
-//         // Re-compile this build script when its source files change.
-//         if (!c3nob::go_rebuild_urself(argc, argv, "build", "build.c3")) return 1;
-//
-//         c3nob::Cmd cmd = {};
-//         cmd.append_array({"cc", "-Wall", "-Wextra", "-o", "main", "main.c3"});
-//         if (!cmd.run()) return 1;
-//         return 0;
-//     }
-//
-// This v1 covers the most-used subset of nob.h:
-//   * Dynamic arrays (DAs) of any element type (via da_append / da_free)
-//   * String_Builder for efficient string assembly
-//   * Cmd - a dynamic string array for command-line arguments + fork/exec/wait
-//   * File helpers: exists / type / mkdir / read / write / delete
-//   * Path utilities: name / absolute / current dir
-//   * needs_rebuild / go_rebuild_urself - "Go Rebuild Urself" tech
-//   * Lightweight log() with log levels (non-variadic - caller formats)
-//
-// v1 deliberately drops (save for v2):
-//   * Variadic forwarders (log(...) / sb_appendf(...) / temp_sprintf(...)) -
-//     C3's fn-level variadic forwarding isn't a stable language feature.
-//     Callers format their own messages first.
-//   * Recursive directory walk / copy recursively - bug-prone, big surface.
-//   * Async process fan-out (Procs) - covered in v2.
+// c3c 0.8.1 type conventions used here:
+//   * 8-byte signed/unsigned: `long` (Linux glibc x86_64) / `usz` always
+//     8 bytes on 64-bit targets and matches `size_t` ABI
+//   * 64-bit `_off_t`/`time_t` fields: `usz` - same byte count, ABI
+//     matches both glibc `long` and MSVCRT `__int64` (size_t bytes).
 //
 // Public domain.
 // ============================================================================
@@ -44,8 +35,7 @@ module c3nob;
 import std::io;
 
 // ----------------------------------------------------------------------------
-// Faults - C3 zero-cost error values (used internally by functions that return
-// `bool` in this v1, but exposed so a v2 can opt into typed errors.)
+// Faults
 // ----------------------------------------------------------------------------
 
 faultdef C3NOB_ERR;
@@ -58,8 +48,7 @@ faultdef C3NOB_CHILD_EXEC_FAILED;
 faultdef C3NOB_CHILD_WAIT_FAILED;
 
 // ----------------------------------------------------------------------------
-// Libc FFI - everything we need from POSIX + libc.
-// C3 has full C ABI compatibility, so plain `extern fn` declarations work.
+// Shared libc declarations - identical on POSIX and MSVCRT (lowercase names).
 // ----------------------------------------------------------------------------
 
 extern fn void* malloc(usz size);
@@ -68,37 +57,116 @@ extern fn void  free(void* p);
 extern fn char* strerror(int errnum);
 extern fn int   strcmp(char* a, char* b);
 extern fn usz   strlen(char* s);
-
-extern fn int   fork();
-extern fn int   execvp(char* path, char** argv);
 extern fn void  _exit(int status);
-extern fn int   waitpid(int pid, int* status, int options);
+extern fn int   close(int fd);
 
+// ----------------------------------------------------------------------------
+// POSIX - declared unconditionally. On Windows c3nob.c3 never references
+// these inside `$if !env::WIN32` blocks, so the linker is not asked to
+// resolve them.
+// ----------------------------------------------------------------------------
+
+extern fn int    fork();
+extern fn int    execvp(char* path, char** argv);
+extern fn int    waitpid(int pid, int* status, int options);
 extern fn int    access(char* path, int mode);
-extern fn int    stat(char* path, CStat* buf);
+extern fn int    stat(char* path, PosCStat* buf);
 extern fn int    mkdir(char* path, int mode);
 extern fn int    unlink(char* path);
 extern fn int    rmdir(char* path);
 extern fn int    chdir(char* path);
 extern fn char*  getcwd(char* buf, usz size);
-extern fn int   open(char* path, int flags, int mode);
-extern fn int   close(int fd);
-extern fn long  read(int fd, char* buf, usz count);
-extern fn long  write(int fd, char* buf, usz count);
-extern fn char* strdup(char* s);
+extern fn int    open(char* path, int flags, int mode);
+extern fn long   read(int fd, char* buf, usz count);
+extern fn long   write(int fd, char* buf, usz count);
+extern fn char*  strdup(char* s);
 
 // ----------------------------------------------------------------------------
-// Opaque pointers for things we don't model.
-// c3nob doesn't currently do directory iteration (use libc opendir from C
-// integration in user code if you need it) - so no opaque DIR handle here.
-//
-// ----------------------------------------------------------------------------
-// Layout of `struct stat` from libc (enough for our needs).
-// Layout follows glibc x86-64 / aarch64 Linux. Other platforms will need to
-// be re-shaped or guarded with $if at compile time.
+// MSVCRT (Windows) - declared unconditionally. c3nob.c3 only references
+// these inside `$if env::WIN32` blocks, so on POSIX the linker is not
+// asked to resolve them.
 // ----------------------------------------------------------------------------
 
-struct CStat @cname("struct stat") @packed {
+extern fn int    _access(char* path, int mode);
+extern fn int    _chdir(char* path);
+extern fn char*  _getcwd(char* buf, int size);
+extern fn int    _mkdir(char* path);
+extern fn int    _unlink(char* path);
+extern fn int    _rmdir(char* path);
+extern fn int    _open(char* path, int flags, int mode);
+extern fn int    _read(int fd, char* buf, uint count);
+extern fn int    _write(int fd, char* buf, uint count);
+extern fn int    _stat(char* path, WinCStat* buf);
+extern fn char*  _strdup(char* s);
+
+// ----------------------------------------------------------------------------
+// Win32 kernel32 - PascalCase kernel32 symbols bound via @cname. BOOL is
+// declared as `int` (4 bytes), NOT C3 `bool` (1 byte) - matches MSVCRT's
+// `BOOL` typedef to `int`.
+// ----------------------------------------------------------------------------
+
+struct WinStartupInfo @cname("_STARTUPINFOA") @packed {
+    uint   cb;
+    char*  lpReserved;
+    char*  lpDesktop;
+    char*  lpTitle;
+    uint   dwX;
+    uint   dwY;
+    uint   dwXSize;
+    uint   dwYSize;
+    uint   dwXCountChars;
+    uint   dwYCountChars;
+    uint   dwFillAttribute;
+    uint   dwFlags;
+    ushort wShowWindow;
+    ushort cbReserved2;
+    char*  lpReserved2;
+    void*  hStdInput;
+    void*  hStdOutput;
+    void*  hStdError;
+}
+
+struct WinProcessInfo @cname("_PROCESS_INFORMATION") @packed {
+    void*  hProcess;
+    void*  hThread;
+    uint   dwProcessId;
+    uint   dwThreadId;
+}
+
+// Note on @cname placement: c3c 0.8.1 ONLY accepts `@cname("...")` AFTER
+// the parameter list on `extern fn` declarations; placing it between the
+// return type and the C3 identifier (the form used for some stdlib struct
+// decls) produces "Error: Expected a function name here, e.g. 'someName'."
+// Tested empirically on c3c 0.8.1 / Linux.
+extern fn int win_create_process_a(
+    char*           lpApplicationName,
+    char*           lpCommandLine,
+    void*           lpProcessAttributes,
+    void*           lpThreadAttributes,
+    int             bInheritHandles,
+    uint            dwCreationFlags,
+    void*           lpEnvironment,
+    char*           lpCurrentDirectory,
+    WinStartupInfo* lpStartupInfo,
+    WinProcessInfo* lpProcessInformation) @cname("CreateProcessA");
+
+extern fn uint win_wait_for_single_object(
+    void* hHandle, uint dwMilliseconds) @cname("WaitForSingleObject");
+
+extern fn int win_get_exit_code_process(
+    void* hProcess, uint* lpExitCode) @cname("GetExitCodeProcess");
+
+extern fn int win_close_handle(void* hObject) @cname("CloseHandle");
+
+// ----------------------------------------------------------------------------
+// Per-platform struct stat - both layouts are declared unconditionally;
+// c3nob.c3 selects via `$if env::WIN32:` at function-body scope. On Linux
+// uses `PosCStat` (glibc x86-64 layout); on Windows uses `WinCStat`
+// (MSVCRT struct _stat layout with explicit `__pad` fields to match
+// natural 8-byte alignment of time_t / _off_t).
+// ----------------------------------------------------------------------------
+
+struct PosCStat @cname("struct stat") @packed {
     long st_dev;
     long st_ino;
     long st_nlink;
@@ -121,26 +189,52 @@ struct CStat @cname("struct stat") @packed {
     long __unused2;
 }
 
+struct WinCStat @cname("struct _stat") @packed {
+    uint   st_dev;
+    ushort st_ino;
+    ushort st_mode;
+    short  st_nlink;
+    short  st_uid;
+    short  st_gid;
+    short  __pad0;       // reach 16-byte boundary for st_rdev
+    uint   st_rdev;
+    uint   __pad1;       // pad to 24-byte boundary before 8-byte st_size
+    usz    st_size;      // _off_t / __int64 (usz = 8 bytes on 64-bit targets)
+    usz    st_atime;     // time_t  / __int64
+    usz    st_mtime;
+    usz    st_ctime;
+}
+
+// ----------------------------------------------------------------------------
+// Constants - all unconditional. Wrong-platform constants simply go unused.
+// ----------------------------------------------------------------------------
+
 // access() modes
 const int C3NOB_F_OK     = 0;
 const int C3NOB_R_OK     = 4;
 const int C3NOB_W_OK     = 2;
 const int C3NOB_X_OK     = 1;
-// open() flags
+// open() flags - same bit values on POSIX glibc and MSVCRT.
 const int C3NOB_O_RDONLY = 0;
 const int C3NOB_O_WRONLY = 1;
 const int C3NOB_O_RDWR   = 2;
-const int C3NOB_O_CREAT  = 0100;
-const int C3NOB_O_TRUNC  = 01000;
-const int C3NOB_O_APPEND = 02000;
-// file-type mode bits
+const int C3NOB_O_CREAT  = 0100;    // = 0x40 on both POSIX and MSVCRT
+const int C3NOB_O_TRUNC  = 01000;   // = 0x200
+const int C3NOB_O_APPEND = 02000;   // = 0x400
+// File-type mode bits - same encoding on POSIX and MSVCRT struct _stat
+// (high 4 bits: S_IFMT/S_IFREG/S_IFDIR).
 const int C3NOB_S_IFMT   = 0170000;
 const int C3NOB_S_IFREG  = 0100000;
 const int C3NOB_S_IFDIR  = 0040000;
-const int C3NOB_S_IFLNK  = 0120000;
-// exit status decoding
+const int C3NOB_S_IFLNK  = 0120000;   // POSIX-only semantically; on Windows
+                                      // struct _stat has no LNK bit.
 const int C3NOB_WIFEXITED_MASK    = 0x7f;
 const int C3NOB_WEXITSTATUS_SHIFT = 8;
+
+// Windows-only constants (unused on POSIX; MSVCRT needs _O_BINARY to
+// disable CRLF translation, kernel32 needs an INFINITE sentinel).
+const int  C3NOB_O_BINARY  = 0x8000;
+const uint C3NOB_INFINITE  = 0xFFFFFFFFu;
 
 // ----------------------------------------------------------------------------
 // Enums
@@ -161,8 +255,7 @@ enum FileType {
 }
 
 // ----------------------------------------------------------------------------
-// Dynamic-array structs. All share the .items / .len / .cap three-field
-// shape that the da_... macros below expect.
+// Dynamic-array structs - shared (.items/.len/.cap shape used by da_*).
 // ----------------------------------------------------------------------------
 
 struct String_Builder {
@@ -190,60 +283,14 @@ struct Procs {
 }
 
 // ----------------------------------------------------------------------------
-// Global log state - declared here, defined (with initializer) in c3nob.c3.
+// Global log state
 // ----------------------------------------------------------------------------
 
 extern LogLevel minimal_log_level;
 
-// log() is NON-variadic for v1; callers format their own messages:
-//     c3nob::log(C3NOB_INFO, String.fmt("ran %s", cmd_name));
-
-// ----------------------------------------------------------------------------
-// File helpers
-// ----------------------------------------------------------------------------
-
-
-// ----------------------------------------------------------------------------
-// Path utilities
-// ----------------------------------------------------------------------------
-
-
-// ----------------------------------------------------------------------------
-// Build / dependency checking
-// ----------------------------------------------------------------------------
-
-
-// "Go Rebuild Urself" technology - recompile `source_path` into `binary_path`
-// if the binary is older (or missing), then re-exec the rebuilt binary with
-// the original argv so the caller sees a fresh build before doing any work.
-
-// ----------------------------------------------------------------------------
-// String_Builder primitives (called by the sb_... macros below)
-// ----------------------------------------------------------------------------
-
-
-// Convert the builder into a null-terminated String view (writes a '\0' in
-// the buffer and returns a slice that excludes it).
-
-// ----------------------------------------------------------------------------
-// Cmd: command-line builder
-// ----------------------------------------------------------------------------
-
-
 // ----------------------------------------------------------------------------
 // ======================  M A C R O S  ====================================
 
-// The `$variable` macro-parameter syntax and `$if`/`$endif` colon-form
-// compile-time branching follow the c3-lang.org homepage examples.
-
-// Reserve capacity in a dynamic array. Works on any struct with the
-// .items / .len / .cap shape. Caller passes the POINTER (e.g. `&my_list`)
-// and `$da` is substituted accordingly - do not pass `&&my_list`.
-//
-// Allocates at 16 bytes per slot, which is the largest element size we use
-// (sizeof(String) on 64-bit). This over-allocates for char/int storage but
-// keeps the macro simple and generic. For tighter packing, write a
-// type-specialized helper.
 macro da_reserve($da, $expected)
 {
     while ($expected > $da.cap) {
@@ -254,7 +301,6 @@ macro da_reserve($da, $expected)
     }
 }
 
-// Append a single item.
 macro da_append($da, $item)
 {
     @da_reserve($da, $da.len + 1);
@@ -281,7 +327,6 @@ macro da_pop($da)
     --$da.len;
 }
 
-// Release the array's backing buffer and reset fields to empty.
 macro da_free($da)
 {
     if ($da.items != null && $da.cap > 0) {
@@ -292,43 +337,11 @@ macro da_free($da)
     }
 }
 
-// ----------------------------------------------------------------------------
-// String_Builder macros - thin shims over the sb_append_* primitives
-// ----------------------------------------------------------------------------
-
 macro sb_append($sb, char $c)
 {
     return sb_append_byte($sb, $c);
 }
 
-// ----------------------------------------------------------------------------
-// Logging macros - shorter, level-prefilled wrappers around log()
-// ----------------------------------------------------------------------------
-
-macro info(String $msg)
-{
-    log(LogLevel.C3NOB_INFO, $msg);
-}
-
-macro warning(String $msg)
-{
-    log(LogLevel.C3NOB_WARNING, $msg);
-}
-
-macro error_msg(String $msg)
-{
-    log(LogLevel.C3NOB_ERROR, $msg);
-}
-
-// ----------------------------------------------------------------------------
-// Compiler abstraction: append the preferred C3 compiler command to a Cmd.
-//   * Default: "c3c"
-//   * To swap (e.g. "clang", or a path to a custom c3c fork), users can:
-//       - redefine this function in their own copy of c3nob.c3
-//       - or just call `cmd.append("clang")` themselves without this helper
-//
-// v1 deliberately drops the older `$if $defined(C3NOB_CC)` macro form - that
-// path tripped c3c 0.8.x's macro parser; the helper-function form is
-// straightforward and portable.
-// ----------------------------------------------------------------------------
-
+macro info(String $msg)     { log(LogLevel.C3NOB_INFO,    $msg); }
+macro warning(String $msg)  { log(LogLevel.C3NOB_WARNING, $msg); }
+macro error_msg(String $msg) { log(LogLevel.C3NOB_ERROR,  $msg); }
