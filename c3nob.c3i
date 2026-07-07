@@ -158,6 +158,17 @@ extern fn int win_get_exit_code_process(
 
 extern fn int win_close_handle(void* hObject) @cname("CloseHandle");
 
+// MoveFileExA from kernel32 - used by go_rebuild_urself on Windows to
+// rename a freshly-staged binary over the running one (Windows allows
+// open-file renames; only writes/deletes to mapped PE sections are
+// blocked). MOVEFILE_REPLACE_EXISTING = 0x1 is the only flag we use.
+extern fn int win_move_file_ex_a(
+    char* lpExistingFileName,
+    char* lpNewFileName,
+    uint dwFlags) @cname("MoveFileExA");
+
+const uint C3NOB_MOVEFILE_REPLACE_EXISTING = 0x1u;
+
 // ----------------------------------------------------------------------------
 // Per-platform struct stat - both layouts are declared unconditionally;
 // c3nob.c3 selects via `$if env::WIN32:` at function-body scope. On Linux

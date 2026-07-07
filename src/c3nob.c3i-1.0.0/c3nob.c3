@@ -701,22 +701,68 @@ fn bool go_rebuild_urself(int argc, char** argv, String binary_path, String sour
     cc.append("c3nob.c3i");
     cc.append("c3nob.c3");
     cc.append("-o");
-    cc.append(binary_path);
+
+    // Stage the new binary to a side name on Windows. The running
+    // `<binary_path>.exe` holds a write-lock for the process lifetime,
+    // so the link step cannot overwrite it while we're executing here.
+    // We compile to `<binary_path>.stage` (c3c auto-appends `.exe` on
+    // Windows), then MoveFileExA the staged file over the real binary
+    // (Windows permits renames of open files; the running process keeps
+    // executing from its now-orphaned PE section until it exits).
+    String compile_target;
+    $if env::WIN32:
+        String_Builder staged_path_sb = {};
+        sb_append_buf(&staged_path_sb, binary_path.ptr, binary_path.len);
+        sb_append_cstr(&staged_path_sb, ".stage");
+        compile_target = sb_to_string(&staged_path_sb);
+    $else
+        compile_target = binary_path;
+    $endif
+    cc.append(compile_target);
 
     io::printfn("REBUILD: c3c compile %s c3nob.c3i c3nob.c3 -o %s\n",
-        source_path, binary_path);
+        source_path, compile_target);
     if (!cc.run()) {
-        io::printfn("rebuild failed\n");
+        io::printfn("rebuild failed (compile to %s)\n", compile_target);
         return false;
     }
 
     $if env::WIN32:
+        // Construct the on-disk source path (`<staged>.exe`) and the
+        // destination path we want to atomically overwrite
+        // (`<binary>.exe`). c3c wrote the staged binary with .exe on
+        // Windows; the real binary_path is what build.c3 passed and
+        // c3c resolved it to `<binary_path>.exe`.
+        String_Builder src_exe_sb = {};
+        sb_append_buf(&src_exe_sb, compile_target.ptr, compile_target.len);
+        sb_append_cstr(&src_exe_sb, ".exe");
+        String src_exe = sb_to_string(&src_exe_sb);
+
+        String_Builder dst_exe_sb = {};
+        sb_append_buf(&dst_exe_sb, binary_path.ptr, binary_path.len);
+        sb_append_cstr(&dst_exe_sb, ".exe");
+        String dst_exe = sb_to_string(&dst_exe_sb);
+
+        int moved = win_move_file_ex_a(
+            src_exe.ptr, dst_exe.ptr,
+            C3NOB_MOVEFILE_REPLACE_EXISTING);
+        if (moved != 0) {
+            io::printfn("REBUILD: MoveFileExA %s -> %s\n",
+                src_exe, dst_exe);
+        } else {
+            io::printfn(
+                "REBUILD: MoveFileExA failed - spawning %s directly "
+                "(Windows is likely locking the running build.exe; the "
+                "staged file will be picked up on the next invocation)\n",
+                src_exe);
+            dst_exe = src_exe;
+        }
+
         // Spawn the freshly-built binary with the original argv[1..n]
-        // (argv[0] replaced by `binary_path`) so command-line args are
-        // preserved across the rebuild.
+        // so command-line args are preserved across the rebuild.
         Cmd new_cmd = {};
         defer Cmd.free(&new_cmd);
-        new_cmd.append(binary_path);
+        new_cmd.append(dst_exe);
         for (int j = 1; j < argc; j++) {
             char* arg_z = argv[j];
             if (arg_z == null) break;
