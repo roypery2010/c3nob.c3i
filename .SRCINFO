@@ -6,7 +6,7 @@ pkgbase = c3nob
 	arch = any
 	license = MIT
 	depends = c3c
-	source = c3nob-1.0.0.tar.gz::https://github.com/roypery2010/c3nob.c3i/archive/v1.0.0.tar.gz
-	sha256sums = SKIP
+	source = c3nob-1.0.0.tar.gz::https://github.com/roypery2010/c3nob.c3i/archive/refs/tags/v1.0.0.tar.gz
+	sha256sums = ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILx5VuZY36SjNNRc9Q+4m6binOKUodIBMuAtWO/Hrnes roypery2010@gmail.com
 
 pkgname = c3nob
