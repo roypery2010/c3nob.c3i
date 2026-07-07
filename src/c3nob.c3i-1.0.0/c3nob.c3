@@ -418,7 +418,14 @@ fn void Cmd.append_array(Cmd* self, String[] args)
 
 fn void Cmd.render(Cmd self, String_Builder* render)
 {
-    for (usz i = 0; i < self.items.len; i++) {
+    // Use `self.len` (the Cmd's array length) rather than `self.items.len`.
+    // `self.items` is a `String*`, so `self.items.len` auto-dereferences to
+    // `(*self.items).len` = the FIRST String's length. On Linux our
+    // typically-short first arg ("c3c"/"build") masked this as silent
+    // truncation. On Windows argv[0] is a long path, so the loop reads
+    // far past `items[0]` and triggers "Array index out of bounds" at
+    // runtime with a sign-bit-set size (~-9.2e18).
+    for (usz i = 0; i < self.len; i++) {
         if (i > 0) sb_append_byte(render, ' ');
         String a = self.items[i];
         for (usz j = 0; j < a.len; j++) sb_append_byte(render, a[j]);
@@ -774,13 +781,33 @@ fn bool go_rebuild_urself(int argc, char** argv, String binary_path, String sour
         _exit(ok_self ? 0 : 1);
         return false;  // unreachable
     $else
-        char* bin_z = strdup(binary_path.ptr);
-        if (bin_z == null) {
-            io::printfn("strdup failed after rebuild\n");
-            return false;
+        // On POSIX, execvp(file, argv) searches PATH for `file` when
+        // it contains no '/' — cwd is almost never in PATH, so handing
+        // execvp a bare name like "build" (which build.c3 does) silently
+        // fails to find the ./build we just compiled, even though it
+        // sits next to the running process. Fix: prepend "./" when the
+        // caller gave us a bare name. If the caller's path already
+        // starts with '/' or "./", leave it alone.
+        String exec_path;
+        bool needs_dot_slash = binary_path.len > 0 &&
+            binary_path.ptr[0] != '/' &&
+            !(binary_path.len >= 2 && binary_path.ptr[0] == '.' &&
+              binary_path.ptr[1] == '/');
+        if (needs_dot_slash) {
+            String_Builder exec_sb = {};
+            sb_append_cstr(&exec_sb, "./");
+            sb_append_buf(&exec_sb, binary_path.ptr, binary_path.len);
+            exec_path = sb_to_string(&exec_sb);
+        } else {
+            char* dup = strdup(binary_path.ptr);
+            if (dup == null) {
+                io::printfn("strdup failed after rebuild\n");
+                return false;
+            }
+            exec_path = (String)dup[:binary_path.len];
         }
-        execvp(bin_z, argv);
-        io::printfn("execvp after rebuild failed\n");
+        execvp(exec_path.ptr, argv);
+        io::printfn("execvp after rebuild failed (path=%s)\n", exec_path);
         return false;
     $endif
 }
