@@ -1,0 +1,20 @@
+# c3nob compiled binaries
+/build
+/main
+/c3nob
+/a.out
+
+# Backups and editor scratch files
+*.bak
+*~
+.*.swp
+.*.swo
+*.tmp
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# c3c intermediates (rarely produced, but safe to ignore)
+/*.o
+/*.obj
