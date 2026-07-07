@@ -631,7 +631,17 @@ fn bool Procs.flush(Procs* self)
 
 // Uses `usz` for mtime (8 bytes on all 64-bit targets) so post-2038
 // timestamps don't lose the upper 32 bits on Windows where C3 `long` is
-// 32-bit.
+// 32-bit. Additionally combines `st_mtime` (seconds) with `st_mtime_nsec`
+// (nanoseconds) into a single monotonically-increasing integer so two
+// file writes within the same wall-clock second (which happens routinely
+// on touch-and-rebuild workflows and on filesystems with 1-second mtime
+// resolution) are still detected as newer. Windows MSVCRT struct _stat
+// has no nanosecond field, so we multiply seconds by 10^9 and leave the
+// sub-second slot at zero — a freshly-written Windows file will still
+// appear strictly newer than a previously-written one provided the wall
+// clock advances. (Tick-precision ordering on Windows is therefore
+// unchanged from before; this fix is structural on POSIX, neutral on
+// Win32.)
 fn bool mtime_of(String path, usz* out)
 {
     char* cstr;
@@ -645,11 +655,13 @@ fn bool mtime_of(String path, usz* out)
     $if env::WIN32:
         WinCStat st;
         if (_stat(cstr, &st) != 0) return false;
-        *out = (usz)st.st_mtime;
+        // Win32 _stat only exposes whole-second resolution.
+        *out = (usz)st.st_mtime * 1_000_000_000;
     $else
         PosCStat st;
         if (stat(cstr, &st) != 0) return false;
-        *out = (usz)st.st_mtime;
+        // POSIX has st_mtime (seconds) + st_mtime_nsec (0..999_999_999).
+        *out = (usz)st.st_mtime * 1_000_000_000 + (usz)st.st_mtime_nsec;
     $endif
     return true;
 }
