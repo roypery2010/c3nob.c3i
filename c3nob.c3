@@ -397,7 +397,16 @@ fn void Cmd.append(Cmd* self, String arg)
     if (self.len + 1 > self.cap) {
         if (self.cap == 0) self.cap = 16;
         while (self.len + 1 > self.cap) self.cap *= 2;
-        void* tmp = realloc((void*)self.items, self.cap);
+        // `self.items` is `String*` - 16 bytes per element on x64
+        // ({char* items; usz len}). `self.cap` is in ELEMENTS, not
+        // bytes, so this realloc must be sized in elements too.
+        // Without the *16, cap=16 only allocates 16 bytes and the
+        // second append overwrites heap metadata - Windows heap
+        // manager raises STATUS_HEAP_CORRUPTION on the next heap
+        // op. The macro `da_reserve` in c3nob.c3i already does
+        // `$da.cap * 16`; these inlined Cmd methods predate the
+        // macro and were missed. c3nob v2 is x64-only (see header).
+        void* tmp = realloc((void*)self.items, self.cap * 16);
         self.items = (String*)tmp;
     }
     self.items[self.len++] = arg;
@@ -409,7 +418,16 @@ fn void Cmd.append_array(Cmd* self, String[] args)
     if (wanted > self.cap) {
         if (self.cap == 0) self.cap = 16;
         while (wanted > self.cap) self.cap *= 2;
-        void* tmp = realloc((void*)self.items, self.cap);
+        // `self.items` is `String*` - 16 bytes per element on x64
+        // ({char* items; usz len}). `self.cap` is in ELEMENTS, not
+        // bytes, so this realloc must be sized in elements too.
+        // Without the *16, cap=16 only allocates 16 bytes and the
+        // second append overwrites heap metadata - Windows heap
+        // manager raises STATUS_HEAP_CORRUPTION on the next heap
+        // op. The macro `da_reserve` in c3nob.c3i already does
+        // `$da.cap * 16`; these inlined Cmd methods predate the
+        // macro and were missed. c3nob v2 is x64-only (see header).
+        void* tmp = realloc((void*)self.items, self.cap * 16);
         self.items = (String*)tmp;
     }
     for (usz k = 0; k < args.len; k++) self.items[self.len + k] = args[k];
