@@ -147,6 +147,24 @@ forwarders (`log(...)` / `sb_appendf(...)`).
 
 ## Releases
 
+### v1.2.0
+
+- **Windows rebuild loop fix (bug).** `go_rebuild_urself`'s early
+  existence/mtime check now uses the actual on-disk filename
+  (`<binary>.exe`) on Windows. Background: `c3c -o build` writes the
+  binary to `build.exe`, but `build.c3` calls c3nob with the bare
+  name `"build"`. MSVCRT's `_access(path, F_OK)` is strict-name
+  lookup — it does **not** auto-append `.exe` the way
+  `CreateProcessA`'s command-line parser does — so `file_exists`
+  ("build") was returning false even though `build.exe` was sitting
+  on disk. As a result, `needs_rebuild1` always returned true on
+  Win32, and the spawn-and-rebuild loop never converged into the
+  no-op second pass it converges into on POSIX. Each `./build`
+  invocation on Windows used to recompile itself forever. The
+  parking / `MoveFileExA` install / PID-suffixed stage-name logic
+  is unchanged; only the early mtime-vs-existence check was
+  adjusted. No POSIX behaviour change.
+
 ### v1.1.0
 
 - **Aliased API surface (additive).** Every public *free function* and

@@ -746,7 +746,34 @@ fn bool go_rebuild_urself(int argc, char** argv, String binary_path, String sour
     // argv is consumed in BOTH branches below (Win32 forwards argv[1..n]
     // for the spawned binary; POSIX hands argv to execvp), so there is no
     // unused-parameter warning to suppress here.
-    if (!needs_rebuild1(binary_path, source_path)) return true;
+
+    // Windows filename handling: `c3c -o <name>` writes its output to
+    // "<name>.exe" (c3c auto-appends the platform's executable
+    // extension). `build.c3` calls us with binary_path="build" - the
+    // bare, un-decorated name - but the actual on-disk file is
+    // "build.exe". MSVCRT's `_access(path, F_OK)` is strict-name
+    // lookup (it does NOT auto-append ".exe" the way CreateProcessA's
+    // command-line parser does), so file_exists("build") returns false
+    // even though "build.exe" is sitting on disk. Without this
+    // adjustment, the early needs_rebuild1 check is effectively
+    // hard-wired to "always true" on Win32 and the spawn-and-rebuild
+    // loop never converges into the no-op second pass it converges
+    // into on POSIX.
+    //
+    // Win32 contract: callers MUST pass the bare binary name
+    // (no ".exe" suffix). Passing "build.exe" would yield
+    // "<name>.exe.exe" after this suffix and fail to find the file
+    // (c3c never decorates with a second .exe). POSIX callers can
+    // pass either form - no decoration happens there.
+    String_Builder ab_sb = {};
+    defer if (ab_sb.items != null && ab_sb.cap > 0) free(ab_sb.items);
+    String actual_binary_path = binary_path;
+    $if env::WIN32:
+        sb_append_buf(&ab_sb, binary_path.ptr, binary_path.len);
+        sb_append_cstr(&ab_sb, ".exe");
+        actual_binary_path = sb_to_string(&ab_sb);
+    $endif
+    if (!needs_rebuild1(actual_binary_path, source_path)) return true;
 
     Cmd cc = {};
     defer Cmd.free(&cc);
