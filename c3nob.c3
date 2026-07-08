@@ -930,3 +930,132 @@ fn bool go_rebuild_urself(int argc, char** argv, String binary_path, String sour
         return false;
     $endif
 }
+
+// ============================================================================
+//                  c3nob_* WRAPPER ALIASES
+// ============================================================================
+// Every public free function in c3nob has a `c3nob_`-prefixed alias defined
+// below so callers can write `c3nob_file_exists(p)` instead of the
+// longer `c3nob::file_exists(p)`. Each alias is a one-line delegate: bug
+// fixes / behaviour changes happen in the canonical implementation, not
+// here.
+// ============================================================================
+
+fn void c3nob_set_minimal_log_level(LogLevel level)
+{
+    set_minimal_log_level(level);
+}
+
+fn void c3nob_log(LogLevel level, String msg)
+{
+    log(level, msg);
+}
+
+fn bool c3nob_path_is_absolute(String path)
+{
+    return path_is_absolute(path);
+}
+
+fn String c3nob_path_name(String path)
+{
+    return path_name(path);
+}
+
+fn String c3nob_current_dir()
+{
+    return current_dir();
+}
+
+fn bool c3nob_set_current_dir(String path)
+{
+    return set_current_dir(path);
+}
+
+fn FileType c3nob_get_file_type(String path)
+{
+    return get_file_type(path);
+}
+
+fn bool c3nob_file_exists(String path)
+{
+    return file_exists(path);
+}
+
+fn bool c3nob_mkdir_if_not_exists(String path)
+{
+    return mkdir_if_not_exists(path);
+}
+
+fn bool c3nob_delete_file(String path)
+{
+    return delete_file(path);
+}
+
+fn bool c3nob_write_entire_file(String path, String data)
+{
+    return write_entire_file(path, data);
+}
+
+fn bool c3nob_read_entire_file(String path, String_Builder* sb)
+{
+    return read_entire_file(path, sb);
+}
+
+fn usz c3nob_sb_append_byte(String_Builder* sb, char c)
+{
+    return sb_append_byte(sb, c);
+}
+
+fn usz c3nob_sb_append_buf(String_Builder* sb, char* buf, usz n)
+{
+    return sb_append_buf(sb, buf, n);
+}
+
+fn usz c3nob_sb_append_cstr(String_Builder* sb, char* cstr)
+{
+    return sb_append_cstr(sb, cstr);
+}
+
+fn usz c3nob_sb_append_uint(String_Builder* sb, uint n)
+{
+    return sb_append_uint(sb, n);
+}
+
+fn String c3nob_sb_to_string(String_Builder* sb)
+{
+    return sb_to_string(sb);
+}
+
+fn bool c3nob_mtime_of(String path, usz* out)
+{
+    return mtime_of(path, out);
+}
+
+fn bool c3nob_needs_rebuild1(String output_path, String input_path)
+{
+    return needs_rebuild1(output_path, input_path);
+}
+
+fn bool c3nob_go_rebuild_urself(int argc, char** argv, String binary_path, String source_path)
+{
+    return go_rebuild_urself(argc, argv, binary_path, source_path);
+}
+
+// Functional equivalents of the `info` / `warning` / `error_msg` macros.
+// Use these when you can't / won't thread a String-typed message through
+// a macro call site (e.g. inside a function whose parameter type changes
+// across the call boundary).
+fn void c3nob_info(String msg)
+{
+    log(LogLevel.C3NOB_INFO, msg);
+}
+
+fn void c3nob_warning(String msg)
+{
+    log(LogLevel.C3NOB_WARNING, msg);
+}
+
+fn void c3nob_error_msg(String msg)
+{
+    log(LogLevel.C3NOB_ERROR, msg);
+}

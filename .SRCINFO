@@ -1,12 +1,13 @@
-pkgbase = c3nob
-	pkgdesc = A nob.h style build system implementation for the C3 programming language
-	pkgver = 1.0.0
+pkgbase = c3nob.c3i
+	pkgdesc = A nob.h-like build system but in c3lang
+	pkgver = 1.1.0
 	pkgrel = 1
 	url = https://github.com/roypery2010/c3nob.c3i
 	arch = any
-	license = MIT
+	license = Unlicense
+	makedepends = git
 	depends = c3c
-	source = c3nob-1.0.0.tar.gz::https://github.com/roypery2010/c3nob.c3i/archive/refs/tags/v1.0.0.tar.gz
-	sha256sums = ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILx5VuZY36SjNNRc9Q+4m6binOKUodIBMuAtWO/Hrnes roypery2010@gmail.com
+	source = git+https://github.com/roypery2010/c3nob.c3i.git#branch=main
+	sha256sums = SKIP
 
-pkgname = c3nob
+pkgname = c3nob.c3i

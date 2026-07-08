@@ -5,6 +5,7 @@
 module main;
 import std::io;
 
+
 fn int main(int argc, char** argv)
 {
     (void)argc;

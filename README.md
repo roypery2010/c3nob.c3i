@@ -53,6 +53,8 @@ fn int main(int argc, char** argv) {
 | **Faults**                      | `c3nob_ERR`, `c3nob_FILE_NOT_FOUND`, `c3nob_FILE_OPEN_ERROR`, `c3nob_FILE_READ_ERROR`, `c3nob_FILE_WRITE_ERROR`, `c3nob_CHILD_FORK_FAILED`, `c3nob_CHILD_EXEC_FAILED`, `c3nob_CHILD_WAIT_FAILED` |
 | **Process fan-out (stub)**      | `struct Procs` + `Procs.flush` (v2 will add `Procs.append`)          |
 
+> All public free functions also have matching `c3nob_`-prefixed aliases (`c3nob::c3nob_file_exists` ≡ `c3nob::file_exists`, etc.); either form works.
+
 ## POSIX dependencies
 
 A small set of libc + POSIX extern fns are declared in `c3nob.c3i`:
@@ -91,3 +93,23 @@ Public domain. See [LICENSE.md](LICENSE.md).
 v1 ships the most-used subset of `nob.h`. v2 will add directory walk,
 recursive copy, async `Procs` (parallel c3c compile), and variadic
 forwarders (`log(...)` / `sb_appendf(...)`).
+
+## Releases
+
+### v1.1.0
+
+- **Aliased API surface.** Every public free function now also has a
+  `c3nob_`-prefixed wrapper (e.g. `c3nob::c3nob_file_exists` ≡
+  `c3nob::file_exists`). The two forms are interchangeable; pick whichever
+  reads better at the call site. Canonical names are unchanged, so existing
+  v1.0.0 callers keep working.
+- The published source for this release lives in
+  [`src/c3nob.c3i-1.1.0/`](src/c3nob.c3i-1.1.0/). The v1.0.0 source is
+  preserved verbatim under [`src/c3nob.c3i-1.0.0/`](src/c3nob.c3i-1.0.0/).
+
+### v1.0.0
+
+- Initial cut: dynamic arrays, `String_Builder`, `Cmd`, filesystem
+  helpers, path utilities, build-dependency checks (`mtime_of`,
+  `needs_rebuild1`, `go_rebuild_urself`), fault codes, and a `struct
+  Procs` stub.

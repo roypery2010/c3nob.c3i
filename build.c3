@@ -29,13 +29,13 @@ import std::io;
 fn int main(int argc, char** argv)
 {
     // (1) Go Rebuild Urself: rebuild if c3nob or this script changed.
-    if (!c3nob::go_rebuild_urself(argc, argv, "build", "build.c3")) return 1;
+    if (!c3nob::c3nob_go_rebuild_urself(argc, argv, "build", "build.c3")) return 1;
 
     // (2) Rebuild main only if main.c3 is newer than ./main (or ./main
     // is missing). Mirror the same needs_rebuild1 logic that
     // go_rebuild_urself uses internally, but stay in this process -
     // don't re-exec - since main is a separate downstream binary.
-    if (!c3nob::needs_rebuild1("main", "main.c3")) {
+    if (!c3nob::c3nob_needs_rebuild1("main", "main.c3")) {
         // main.c3 is unchanged relative to ./main - skip the recompile.
     } else {
         io::printfn("REBUILD: c3c compile main.c3 -o main\n");
