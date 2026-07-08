@@ -750,6 +750,45 @@ fn bool go_rebuild_urself(int argc, char** argv, String binary_path, String sour
         sb_append_cstr(&dst_exe_sb, ".exe");
         String dst_exe = sb_to_string(&dst_exe_sb);
 
+        // On Windows a running PE image is locked against in-place
+        // replacement, so MoveFileExA(src, dst, REPLACE_EXISTING)
+        // fails whenever dst is the file we are executing out of
+        // (the user-visible "MoveFileExA failed" you sometimes
+        // see). Renaming an EXECUTING file, however, IS permitted
+        // on Windows: the running process keeps executing from its
+        // now-orphaned PE section until it exits, and the filename
+        // is free for another file to occupy. So park the running
+        // binary at a side name first - then the install move has
+        // an empty `build.exe` slot to land in. A successful park
+        // also prevents the dreaded "fallback-spawn → running
+        // build.stage.exe → next iteration tries to overwrite its
+        // own image → lld-link permission denied" loop that the
+        // old code fell into when the install move failed and the
+        // staged binary had to be executed directly.
+        //
+        // The parked .old.exe is silently overwritten on each
+        // rebuild; build.c3 has no rollback semantics so a stale
+        // .old.exe is uninteresting. Park failures are non-fatal:
+        // we still attempt the install below, and if that fails
+        // too the existing fallback-spawn message path engages.
+        String_Builder old_exe_sb = {};
+        sb_append_buf(&old_exe_sb, binary_path.ptr, binary_path.len);
+        sb_append_cstr(&old_exe_sb, ".old.exe");
+        String old_exe = sb_to_string(&old_exe_sb);
+
+        int parked = win_move_file_ex_a(
+            dst_exe.ptr, old_exe.ptr,
+            C3NOB_MOVEFILE_REPLACE_EXISTING);
+        if (parked != 0) {
+            io::printfn("REBUILD: MoveFileExA %s -> %s (park running exe)\n",
+                dst_exe, old_exe);
+        } else {
+            io::printfn(
+                "REBUILD: MoveFileExA %s -> %s (park running exe) failed "
+                "- continuing with install attempt\n",
+                dst_exe, old_exe);
+        }
+
         int moved = win_move_file_ex_a(
             src_exe.ptr, dst_exe.ptr,
             C3NOB_MOVEFILE_REPLACE_EXISTING);
@@ -757,6 +796,28 @@ fn bool go_rebuild_urself(int argc, char** argv, String binary_path, String sour
             io::printfn("REBUILD: MoveFileExA %s -> %s\n",
                 src_exe, dst_exe);
         } else {
+            // The most likely post-park install failure is an AV/EDR
+            // product (Defender, Crowdstrike, etc.) acquiring a
+            // transient exclusive handle during an on-access scan
+            // of the brief window where build.exe is unoccupied.
+            // Without a rollback, a single failed cycle would leave
+            // the user with NO `build.exe` on disk - the next
+            // `./build` would "command not found" until manual
+            // repair. If we successfully parked the running exe
+            // before the install failed, move it back so the
+            // binary on disk points at the (still-functional) old
+            // code. We then still spawn the freshly-staged binary
+            // for THIS run via `dst_exe = src_exe` below.
+            if (parked != 0) {
+                int restored = win_move_file_ex_a(
+                    old_exe.ptr, dst_exe.ptr,
+                    C3NOB_MOVEFILE_REPLACE_EXISTING);
+                io::printfn(
+                    "REBUILD: MoveFileExA %s -> %s (install failed - "
+                    "rollback parked exe) %s\n",
+                    old_exe, dst_exe,
+                    restored != 0 ? "ok" : "FAILED - build.exe missing on disk!");
+            }
             io::printfn(
                 "REBUILD: MoveFileExA failed - spawning %s directly "
                 "(Windows is likely locking the running build.exe; the "
