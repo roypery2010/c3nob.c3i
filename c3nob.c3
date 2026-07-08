@@ -380,6 +380,36 @@ fn usz sb_append_cstr(String_Builder* sb, char* cstr)
     return sb_append_buf(sb, cstr, strlen(cstr));
 }
 
+// Decimal-ascii append. Writes digits of `n` to `sb` left-to-right.
+// Used by go_rebuild_urself on Windows to PID-suffix the staged-
+// compile filename; defined unconditionally so the `$if env::WIN32:`
+// block can call it without re-declaring.
+fn usz sb_append_uint(String_Builder* sb, uint n)
+{
+    // n=0 -> '0'. Avoids the special case in the loop below.
+    if (n == 0) return sb_append_byte(sb, '0');
+    // Count digits first so we can reserve exactly enough capacity.
+    usz ndigits = 0;
+    uint tmp = n;
+    while (tmp > 0) { ndigits++; tmp /= 10; }
+    // Reserve `ndigits` placeholder slots. We snapshot `old_len` BEFORE
+    // the sb_append_byte loop because realloc inside it may move
+    // sb.items; the absolute index math below is robust against
+    // that realloc because we re-read sb.items after the loop.
+    // (c3c 0.8.1 uses dot-access even on pointer-typed parameters -
+    // it auto-dereferences via the struct field layout. The `->`
+    // arrow syntax from C/C++ is rejected by c3c 0.8.1.)
+    usz old_len = sb.len;
+    for (usz i = 0; i < ndigits; i++) sb_append_byte(sb, '?');
+    // Fill the placeholders right-to-left with the actual digits.
+    usz idx = old_len + ndigits;
+    while (n > 0) {
+        sb.items[--idx] = (char)('0' + (n % 10));
+        n /= 10;
+    }
+    return ndigits;
+}
+
 fn String sb_to_string(String_Builder* sb)
 {
     char nul = 0;
@@ -730,15 +760,22 @@ fn bool go_rebuild_urself(int argc, char** argv, String binary_path, String sour
     // Stage the new binary to a side name on Windows. The running
     // `<binary_path>.exe` holds a write-lock for the process lifetime,
     // so the link step cannot overwrite it while we're executing here.
-    // We compile to `<binary_path>.stage` (c3c auto-appends `.exe` on
-    // Windows), then MoveFileExA the staged file over the real binary
-    // (Windows permits renames of open files; the running process keeps
-    // executing from its now-orphaned PE section until it exits).
+    //
+    // The stage filename is PID-suffixed (`build.stage.<pid>`) so a
+    // fallback-spawned build.stage.<pid>.exe running as our image can
+    // safely recompile on its next iteration without c3c/lld-link
+    // refusing to overwrite its OWN running PE section. The old
+    // implementation used `build.stage` for every run, which
+    // deadlocked the moment the install move failed and we had to
+    // execute the staged binary directly (`lld-link: failed to write
+    // output '.\build.stage.exe': permission denied`). Per-process
+    // PIDs make this collision structurally impossible.
     String compile_target;
     $if env::WIN32:
         String_Builder staged_path_sb = {};
         sb_append_buf(&staged_path_sb, binary_path.ptr, binary_path.len);
-        sb_append_cstr(&staged_path_sb, ".stage");
+        sb_append_cstr(&staged_path_sb, ".stage.");
+        sb_append_uint(&staged_path_sb, win_get_current_process_id());
         compile_target = sb_to_string(&staged_path_sb);
     $else
         compile_target = binary_path;
@@ -837,9 +874,12 @@ fn bool go_rebuild_urself(int argc, char** argv, String binary_path, String sour
                     restored != 0 ? "ok" : "FAILED - build.exe missing on disk!");
             }
             io::printfn(
-                "REBUILD: MoveFileExA failed - spawning %s directly "
-                "(Windows is likely locking the running build.exe; the "
-                "staged file will be picked up on the next invocation)\n",
+                "REBUILD: install failed - spawning %s directly. "
+                "Windows is likely locking build.exe (typical: AV/EDR "
+                "on-access scan). The next iteration uses a fresh "
+                "PID-suffixed stage name so lld-link won't overwrite "
+                "its own image. If the chain repeats, Ctrl+C and retry "
+                "once the AV scan finishes.\n",
                 src_exe);
             dst_exe = src_exe;
         }

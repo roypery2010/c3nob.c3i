@@ -169,6 +169,15 @@ extern fn int win_move_file_ex_a(
 
 const uint C3NOB_MOVEFILE_REPLACE_EXISTING = 0x1u;
 
+// GetCurrentProcessId from kernel32 - used by go_rebuild_urself on
+// Windows to PID-suffix the staged-compile filename. Without the
+// suffix, a fallback-spawned build.stage.exe running on Windows
+// would deadlock at the next rebuild because c3c/lld-link refuses
+// to overwrite the running PE image (the original `lld-link:
+// failed to write output '.\build.stage.exe': permission denied`
+// failure mode). DWORD -> uint on x64 (4-byte unsigned).
+extern fn uint win_get_current_process_id() @cname("GetCurrentProcessId");
+
 // ----------------------------------------------------------------------------
 // Per-platform struct stat - both layouts are declared unconditionally;
 // c3nob.c3 selects via `$if env::WIN32:` at function-body scope. On Linux
