@@ -380,6 +380,36 @@ fn usz sb_append_cstr(String_Builder* sb, char* cstr)
     return sb_append_buf(sb, cstr, strlen(cstr));
 }
 
+// Decimal-ascii append. Writes digits of `n` to `sb` left-to-right.
+// Used by go_rebuild_urself on Windows to PID-suffix the staged-
+// compile filename; defined unconditionally so the `$if env::WIN32:`
+// block can call it without re-declaring.
+fn usz sb_append_uint(String_Builder* sb, uint n)
+{
+    // n=0 -> '0'. Avoids the special case in the loop below.
+    if (n == 0) return sb_append_byte(sb, '0');
+    // Count digits first so we can reserve exactly enough capacity.
+    usz ndigits = 0;
+    uint tmp = n;
+    while (tmp > 0) { ndigits++; tmp /= 10; }
+    // Reserve `ndigits` placeholder slots. We snapshot `old_len` BEFORE
+    // the sb_append_byte loop because realloc inside it may move
+    // sb.items; the absolute index math below is robust against
+    // that realloc because we re-read sb.items after the loop.
+    // (c3c 0.8.1 uses dot-access even on pointer-typed parameters -
+    // it auto-dereferences via the struct field layout. The `->`
+    // arrow syntax from C/C++ is rejected by c3c 0.8.1.)
+    usz old_len = sb.len;
+    for (usz i = 0; i < ndigits; i++) sb_append_byte(sb, '?');
+    // Fill the placeholders right-to-left with the actual digits.
+    usz idx = old_len + ndigits;
+    while (n > 0) {
+        sb.items[--idx] = (char)('0' + (n % 10));
+        n /= 10;
+    }
+    return ndigits;
+}
+
 fn String sb_to_string(String_Builder* sb)
 {
     char nul = 0;
@@ -397,7 +427,16 @@ fn void Cmd.append(Cmd* self, String arg)
     if (self.len + 1 > self.cap) {
         if (self.cap == 0) self.cap = 16;
         while (self.len + 1 > self.cap) self.cap *= 2;
-        void* tmp = realloc((void*)self.items, self.cap);
+        // `self.items` is `String*` - 16 bytes per element on x64
+        // ({char* items; usz len}). `self.cap` is in ELEMENTS, not
+        // bytes, so this realloc must be sized in elements too.
+        // Without the *16, cap=16 only allocates 16 bytes and the
+        // second append overwrites heap metadata - Windows heap
+        // manager raises STATUS_HEAP_CORRUPTION on the next heap
+        // op. The macro `da_reserve` in c3nob.c3i already does
+        // `$da.cap * 16`; these inlined Cmd methods predate the
+        // macro and were missed. c3nob v2 is x64-only (see header).
+        void* tmp = realloc((void*)self.items, self.cap * 16);
         self.items = (String*)tmp;
     }
     self.items[self.len++] = arg;
@@ -409,7 +448,16 @@ fn void Cmd.append_array(Cmd* self, String[] args)
     if (wanted > self.cap) {
         if (self.cap == 0) self.cap = 16;
         while (wanted > self.cap) self.cap *= 2;
-        void* tmp = realloc((void*)self.items, self.cap);
+        // `self.items` is `String*` - 16 bytes per element on x64
+        // ({char* items; usz len}). `self.cap` is in ELEMENTS, not
+        // bytes, so this realloc must be sized in elements too.
+        // Without the *16, cap=16 only allocates 16 bytes and the
+        // second append overwrites heap metadata - Windows heap
+        // manager raises STATUS_HEAP_CORRUPTION on the next heap
+        // op. The macro `da_reserve` in c3nob.c3i already does
+        // `$da.cap * 16`; these inlined Cmd methods predate the
+        // macro and were missed. c3nob v2 is x64-only (see header).
+        void* tmp = realloc((void*)self.items, self.cap * 16);
         self.items = (String*)tmp;
     }
     for (usz k = 0; k < args.len; k++) self.items[self.len + k] = args[k];
@@ -712,15 +760,22 @@ fn bool go_rebuild_urself(int argc, char** argv, String binary_path, String sour
     // Stage the new binary to a side name on Windows. The running
     // `<binary_path>.exe` holds a write-lock for the process lifetime,
     // so the link step cannot overwrite it while we're executing here.
-    // We compile to `<binary_path>.stage` (c3c auto-appends `.exe` on
-    // Windows), then MoveFileExA the staged file over the real binary
-    // (Windows permits renames of open files; the running process keeps
-    // executing from its now-orphaned PE section until it exits).
+    //
+    // The stage filename is PID-suffixed (`build.stage.<pid>`) so a
+    // fallback-spawned build.stage.<pid>.exe running as our image can
+    // safely recompile on its next iteration without c3c/lld-link
+    // refusing to overwrite its OWN running PE section. The old
+    // implementation used `build.stage` for every run, which
+    // deadlocked the moment the install move failed and we had to
+    // execute the staged binary directly (`lld-link: failed to write
+    // output '.\build.stage.exe': permission denied`). Per-process
+    // PIDs make this collision structurally impossible.
     String compile_target;
     $if env::WIN32:
         String_Builder staged_path_sb = {};
         sb_append_buf(&staged_path_sb, binary_path.ptr, binary_path.len);
-        sb_append_cstr(&staged_path_sb, ".stage");
+        sb_append_cstr(&staged_path_sb, ".stage.");
+        sb_append_uint(&staged_path_sb, win_get_current_process_id());
         compile_target = sb_to_string(&staged_path_sb);
     $else
         compile_target = binary_path;
@@ -750,6 +805,45 @@ fn bool go_rebuild_urself(int argc, char** argv, String binary_path, String sour
         sb_append_cstr(&dst_exe_sb, ".exe");
         String dst_exe = sb_to_string(&dst_exe_sb);
 
+        // On Windows a running PE image is locked against in-place
+        // replacement, so MoveFileExA(src, dst, REPLACE_EXISTING)
+        // fails whenever dst is the file we are executing out of
+        // (the user-visible "MoveFileExA failed" you sometimes
+        // see). Renaming an EXECUTING file, however, IS permitted
+        // on Windows: the running process keeps executing from its
+        // now-orphaned PE section until it exits, and the filename
+        // is free for another file to occupy. So park the running
+        // binary at a side name first - then the install move has
+        // an empty `build.exe` slot to land in. A successful park
+        // also prevents the dreaded "fallback-spawn → running
+        // build.stage.exe → next iteration tries to overwrite its
+        // own image → lld-link permission denied" loop that the
+        // old code fell into when the install move failed and the
+        // staged binary had to be executed directly.
+        //
+        // The parked .old.exe is silently overwritten on each
+        // rebuild; build.c3 has no rollback semantics so a stale
+        // .old.exe is uninteresting. Park failures are non-fatal:
+        // we still attempt the install below, and if that fails
+        // too the existing fallback-spawn message path engages.
+        String_Builder old_exe_sb = {};
+        sb_append_buf(&old_exe_sb, binary_path.ptr, binary_path.len);
+        sb_append_cstr(&old_exe_sb, ".old.exe");
+        String old_exe = sb_to_string(&old_exe_sb);
+
+        int parked = win_move_file_ex_a(
+            dst_exe.ptr, old_exe.ptr,
+            C3NOB_MOVEFILE_REPLACE_EXISTING);
+        if (parked != 0) {
+            io::printfn("REBUILD: MoveFileExA %s -> %s (park running exe)\n",
+                dst_exe, old_exe);
+        } else {
+            io::printfn(
+                "REBUILD: MoveFileExA %s -> %s (park running exe) failed "
+                "- continuing with install attempt\n",
+                dst_exe, old_exe);
+        }
+
         int moved = win_move_file_ex_a(
             src_exe.ptr, dst_exe.ptr,
             C3NOB_MOVEFILE_REPLACE_EXISTING);
@@ -757,10 +851,35 @@ fn bool go_rebuild_urself(int argc, char** argv, String binary_path, String sour
             io::printfn("REBUILD: MoveFileExA %s -> %s\n",
                 src_exe, dst_exe);
         } else {
+            // The most likely post-park install failure is an AV/EDR
+            // product (Defender, Crowdstrike, etc.) acquiring a
+            // transient exclusive handle during an on-access scan
+            // of the brief window where build.exe is unoccupied.
+            // Without a rollback, a single failed cycle would leave
+            // the user with NO `build.exe` on disk - the next
+            // `./build` would "command not found" until manual
+            // repair. If we successfully parked the running exe
+            // before the install failed, move it back so the
+            // binary on disk points at the (still-functional) old
+            // code. We then still spawn the freshly-staged binary
+            // for THIS run via `dst_exe = src_exe` below.
+            if (parked != 0) {
+                int restored = win_move_file_ex_a(
+                    old_exe.ptr, dst_exe.ptr,
+                    C3NOB_MOVEFILE_REPLACE_EXISTING);
+                io::printfn(
+                    "REBUILD: MoveFileExA %s -> %s (install failed - "
+                    "rollback parked exe) %s\n",
+                    old_exe, dst_exe,
+                    restored != 0 ? "ok" : "FAILED - build.exe missing on disk!");
+            }
             io::printfn(
-                "REBUILD: MoveFileExA failed - spawning %s directly "
-                "(Windows is likely locking the running build.exe; the "
-                "staged file will be picked up on the next invocation)\n",
+                "REBUILD: install failed - spawning %s directly. "
+                "Windows is likely locking build.exe (typical: AV/EDR "
+                "on-access scan). The next iteration uses a fresh "
+                "PID-suffixed stage name so lld-link won't overwrite "
+                "its own image. If the chain repeats, Ctrl+C and retry "
+                "once the AV scan finishes.\n",
                 src_exe);
             dst_exe = src_exe;
         }
@@ -816,10 +935,10 @@ fn bool go_rebuild_urself(int argc, char** argv, String binary_path, String sour
 //                  c3nob_* WRAPPER ALIASES
 // ============================================================================
 // Every public free function in c3nob has a `c3nob_`-prefixed alias defined
-// below so callers can write `c3nob::c3nob_file_exists(p)` instead of the
-// (less searchable) `c3nob::file_exists(p)`. Each alias is a one-line
-// delegate: bug fixes / behaviour changes happen in the canonical
-// implementation, not here.
+// below so callers can write `c3nob_file_exists(p)` instead of the
+// longer `c3nob::file_exists(p)`. Each alias is a one-line delegate: bug
+// fixes / behaviour changes happen in the canonical implementation, not
+// here.
 // ============================================================================
 
 fn void c3nob_set_minimal_log_level(LogLevel level)
@@ -897,11 +1016,10 @@ fn usz c3nob_sb_append_cstr(String_Builder* sb, char* cstr)
     return sb_append_cstr(sb, cstr);
 }
 
-// Note: `c3nob_sb_append_uint` is intentionally NOT mirrored into the
-// v1.0.0 release. `sb_append_uint` is not defined in src/c3nob.c3i-1.0.0/c3nob.c3
-// (it's a post-v1.0.0 addition), so a wrapper calling it would not compile.
-// The v1.0.0 built-ins `sb_append_byte`, `sb_append_buf`, `sb_append_cstr` are
-// sufficient for that release.
+fn usz c3nob_sb_append_uint(String_Builder* sb, uint n)
+{
+    return sb_append_uint(sb, n);
+}
 
 fn String c3nob_sb_to_string(String_Builder* sb)
 {
