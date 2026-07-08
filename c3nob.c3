@@ -934,11 +934,17 @@ fn bool go_rebuild_urself(int argc, char** argv, String binary_path, String sour
 // ============================================================================
 //                  c3nob_* WRAPPER ALIASES
 // ============================================================================
-// Every public free function in c3nob has a `c3nob_`-prefixed alias defined
-// below so callers can write `c3nob_file_exists(p)` instead of the
-// longer `c3nob::file_exists(p)`. Each alias is a one-line delegate: bug
-// fixes / behaviour changes happen in the canonical implementation, not
-// here.
+// Every public free function AND every public struct method in c3nob has
+// a `c3nob_`-prefixed alias defined below so callers can write
+// `c3nob_file_exists(p)` or `c3nob_cmd_run(&cmd)` instead of the
+// longer canonical forms. The naming convention is:
+//   * free function:    <name>          -> c3nob_<name>
+//   * struct method:    Struct.method   -> c3nob_<struct-lower>_method
+// (Struct name is lowercased; method name is preserved verbatim. Existing
+// prefix-style helper `c3nob_compiler_command` keeps that shape.)
+//
+// Each alias is a one-line delegate: bug fixes / behaviour changes
+// happen in the canonical implementation, not here.
 // ============================================================================
 
 fn void c3nob_set_minimal_log_level(LogLevel level)
@@ -1058,4 +1064,160 @@ fn void c3nob_warning(String msg)
 fn void c3nob_error_msg(String msg)
 {
     log(LogLevel.C3NOB_ERROR, msg);
+}
+
+// ----------------------------------------------------------------------------
+//                  Cmd.<method> -> c3nob_cmd_<method>
+// ----------------------------------------------------------------------------
+// Free-function wrappers around every method on `struct Cmd`. C3 has no
+// syntactic way to `c3nob_`-prefix a method name directly, so we expose
+// each method as a free function named `c3nob_cmd_<method>`. Each
+// wrapper is a single delegation call to the canonical
+// `<cmd>.<method>(...)` body; bug fixes / behaviour changes propagate
+// automatically.
+
+fn void c3nob_cmd_append(Cmd* self, String arg)
+{
+    self.append(arg);
+}
+
+fn void c3nob_cmd_append_array(Cmd* self, String[] args)
+{
+    self.append_array(args);
+}
+
+fn void c3nob_cmd_render(Cmd self, String_Builder* render)
+{
+    self.render(render);
+}
+
+fn void c3nob_cmd_reset(Cmd* self)
+{
+    self.reset();
+}
+
+fn void c3nob_cmd_free(Cmd* self)
+{
+    self.free();
+}
+
+fn bool c3nob_cmd_run(Cmd* self)
+{
+    return self.run();
+}
+
+// ----------------------------------------------------------------------------
+//                  Procs.<method> -> c3nob_procs_<method>
+// ----------------------------------------------------------------------------
+// Same idea for `struct Procs`. Right now Procs has only one method
+// (`flush`); if more are added, mirror the wrapper here.
+
+fn bool c3nob_procs_flush(Procs* self)
+{
+    return self.flush();
+}
+
+// ----------------------------------------------------------------------------
+//                  C3nobCmd / C3nobProcs method parallels + helpers
+// ----------------------------------------------------------------------------
+// C3 has no `typedef`, so the parallel `C3nob*` struct decls in
+// c3nob.c3i are *separate* types at the type-system level even though
+// their memory layouts are byte-identical to the canonicals. To make
+// them ergonomic to use at the call site:
+//   * Each method on `Cmd` / `Procs` is re-declared on `C3nobCmd` /
+//     `C3nobProcs` as a one-line cast delegate. Costs one pointer cast
+//     at call time but keeps `cx.append(...)`-style usage working
+//     without the caller touching the canonical type.
+//   * Bidirectional conversion helpers (`c3nob_<x>_to_<x>` and
+//     `c3nob_<x>_from_<x>`) let callers bounce between the two type
+//     universes when needed. Cost: a struct copy (a few words).
+//
+// Bug fixes / behaviour changes propagate automatically: each parallel
+// is a one-line dispatch to the canonical method body.
+
+fn void C3nobCmd.append(C3nobCmd* self, String arg)
+{
+    ((Cmd*)self).append(arg);
+}
+
+fn void C3nobCmd.append_array(C3nobCmd* self, String[] args)
+{
+    ((Cmd*)self).append_array(args);
+}
+
+fn void C3nobCmd.render(C3nobCmd self, String_Builder* render)
+{
+    ((Cmd*)&self).render(render);
+}
+
+fn void C3nobCmd.reset(C3nobCmd* self)
+{
+    ((Cmd*)self).reset();
+}
+
+fn void C3nobCmd.free(C3nobCmd* self)
+{
+    ((Cmd*)self).free();
+}
+
+fn bool C3nobCmd.run(C3nobCmd* self)
+{
+    return ((Cmd*)self).run();
+}
+
+// ----------------------------------------------------------------------------
+//                  C3nobProcs.<method> parallels
+// ----------------------------------------------------------------------------
+
+fn bool C3nobProcs.flush(C3nobProcs* self)
+{
+    return ((Procs*)self).flush();
+}
+
+// ----------------------------------------------------------------------------
+//                  Bidirectional conversion helpers
+// ----------------------------------------------------------------------------
+// Reinterpret the same memory as the canonical / parallel type. Safe
+// because the layouts are byte-identical. Eliminates the manual cast at
+// the call boundary when callers switch from one type universe to the
+// other.
+
+fn Cmd c3nob_cmd_to_cmd(C3nobCmd c)
+{
+    return *(Cmd*)&c;
+}
+
+fn C3nobCmd c3nob_cmd_from_cmd(Cmd c)
+{
+    return *(C3nobCmd*)&c;
+}
+
+fn Procs c3nob_procs_to_procs(C3nobProcs p)
+{
+    return *(Procs*)&p;
+}
+
+fn C3nobProcs c3nob_procs_from_procs(Procs p)
+{
+    return *(C3nobProcs*)&p;
+}
+
+fn String_Builder c3nob_string_builder_to_string_builder(C3nobString_Builder s)
+{
+    return *(String_Builder*)&s;
+}
+
+fn C3nobString_Builder c3nob_string_builder_from_string_builder(String_Builder s)
+{
+    return *(C3nobString_Builder*)&s;
+}
+
+fn File_Paths c3nob_file_paths_to_file_paths(C3nobFile_Paths f)
+{
+    return *(File_Paths*)&f;
+}
+
+fn C3nobFile_Paths c3nob_file_paths_from_file_paths(File_Paths f)
+{
+    return *(C3nobFile_Paths*)&f;
 }

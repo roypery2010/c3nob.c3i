@@ -303,6 +303,45 @@ struct Procs {
 }
 
 // ----------------------------------------------------------------------------
+// `C3nob*` parallel struct decls - byte-identical layouts to the
+// canonicals above. C3 has no `typedef`, so these are *separate* types at
+// the type-system level even though memory layouts match. Use them when
+// you want every identifier on the c3nob API surface to carry the
+// `C3nob` prefix; cast through the canonical or use the bidirectional
+// conversion helpers (`c3nob_cmd_to_cmd` / `c3nob_cmd_from_cmd`, ...)
+// when you need to interoperate with code that uses the unprefixed
+// types. The platform-internal `WinStartupInfo`, `WinProcessInfo`,
+// `PosCStat`, `WinCStat` decls above do NOT get parallel versions:
+// their `@cname(...)` bindings to Windows / POSIX C structs are an
+// ABI detail of the host platform and renaming them would desync the
+// kernel32 / libc calls.
+// ----------------------------------------------------------------------------
+
+struct C3nobString_Builder {
+    char* items;
+    usz   len;
+    usz   cap;
+}
+
+struct C3nobFile_Paths {
+    String* items;
+    usz     len;
+    usz     cap;
+}
+
+struct C3nobCmd {
+    String* items;
+    usz     len;
+    usz     cap;
+}
+
+struct C3nobProcs {
+    int* items;
+    usz  len;
+    usz  cap;
+}
+
+// ----------------------------------------------------------------------------
 // Global log state
 // ----------------------------------------------------------------------------
 
